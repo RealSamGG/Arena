@@ -88,7 +88,7 @@ StartEditMode() {
     global editMode, editRects, editSel
     r := GetAllPowerRects()
     if (r.Length != 4) {
-        MsgBox "No rectangles found. Calibrate (F8 or F2) first."
+        MsgBox("No rectangles found. Calibrate (F8 or F2) first.")
         return
     }
     editRects := []
@@ -101,8 +101,8 @@ StartEditMode() {
     }
     editMode := true
     DrawEditOverlay()
-    ToolTip "EDIT: Arrows=Move, Ctrl+Arrows=Resize, Shift=×5, Tab/Backspace=Next/Prev, S=Save, Enter=Save&Exit, Esc=Exit", 10, 10, 2
-    SetTimer () => ToolTip(), -2500
+    ToolTip("EDIT: Arrows=Move, Ctrl+Arrows=Resize, Shift=×5, Tab/Backspace=Next/Prev, S=Save, Enter=Save&Exit, Esc=Exit", 10, 10, 2)
+    SetTimer(() => ToolTip(), -2500)
 }
 
 DrawEditOverlay() {
@@ -141,21 +141,21 @@ CycleSel(delta) {
 SaveEditRects(exitAfter := true) {
     global editRects, IniFile, editMode
     if (editRects.Length != 4) {
-        MsgBox "Nothing to save."
+        MsgBox("Nothing to save.")
         return
     }
     Loop 4 {
         r := editRects[A_Index]
-        IniWrite(r.x "," r.y "," r.w "," r.h, IniFile, "rects", "PowerRect" A_Index)
+        IniWrite(Format("{},{},{},{}", r.x, r.y, r.w, r.h), IniFile, "rects", "PowerRect" A_Index)
     }
     RecomputeWorkRect()
     if (exitAfter) {
         editMode := false
         UpdateOverlay(GetAllPowerRects(), [])
-        MsgBox "Saved rectangles.", "Edit Mode"
+        MsgBox("Saved rectangles.", "Edit Mode")
     } else {
-        ToolTip "Saved.", 10, 10, 2
-        SetTimer () => ToolTip(), -700
+        ToolTip("Saved.", 10, 10, 2)
+        SetTimer(() => ToolTip(), -700)
     }
 }
 
@@ -163,7 +163,7 @@ CancelEditRects() {
     global editMode
     editMode := false
     UpdateOverlay(GetAllPowerRects(), [])
-    MsgBox "Exited edit mode.", "Edit Mode"
+    MsgBox("Exited edit mode.", "Edit Mode")
 }
 
 ConstrainRect(r) {
@@ -221,18 +221,18 @@ RecomputeWorkRect() {
 ToggleRun() {
     global running
     running := !running
-    ToolTip running ? "RUNNING…" : "STOPPED"
+    ToolTip(running ? "RUNNING…" : "STOPPED")
     if (running)
         MainLoop()
     else
-        ToolTip "STOPPED", 0, 0, 1
+        ToolTip("STOPPED", 0, 0, 1)
 }
 
 MainLoop() {
     global running, RefreshIntervalMs, ThresholdPower, SaveDir
     EnsureGDI()
     if !DirExist(SaveDir "\debug")
-        DirCreate SaveDir "\debug"
+        DirCreate(SaveDir "\debug")
     RecomputeWorkRect()
     lastRefresh := A_TickCount
 
@@ -240,8 +240,8 @@ MainLoop() {
         shot := SaveDir "\arena_full.png"
         pScr := CaptureWorkBitmap()
         if !pScr {
-            ToolTip "Screen capture failed.", 10, 10, 3
-            Sleep 800
+            ToolTip("Screen capture failed.", 10, 10, 3)
+            Sleep(800)
             continue
         }
         Gdip_SaveBitmapToFile(pScr, shot)
@@ -263,15 +263,15 @@ MainLoop() {
                 if !running
                     return
             }
-            Sleep 300
+            Sleep(300)
         }
 
         if (A_TickCount - lastRefresh >= RefreshIntervalMs) {
             RefreshList()
             lastRefresh := A_TickCount
-            Sleep 1500
+            Sleep(1500)
         }
-        Sleep 800
+        Sleep(800)
     }
 }
 
@@ -330,8 +330,8 @@ OCRRegionValue_FromBitmap(pBmp, r, idx := 0) {
         Gdip_DisposeImage(pCrop)
 
         txt := RunTesseractTXT(tmp, "--psm 7 --oem 1 -l eng -c classify_bln_numeric_mode=1 -c tessedit_char_whitelist=0123456789KkMm., ")
-        try FileDelete tmp
-        try FileAppend txt, SaveDir "\debug\PowerCrop" idx ".txt", "UTF-8"
+        try FileDelete(tmp)
+        try FileAppend(txt, SaveDir "\debug\PowerCrop" idx ".txt", "UTF-8")
 
         return ParsePowerText(txt)
     } catch {
@@ -343,7 +343,7 @@ RunTesseractTXT(imgPath, extra := "") {
     global TesseractExe
     base := A_Temp "\raid_ocr_txt_" A_TickCount "_" Random(1000,9999)
     cmd  := Format('"{1}" "{2}" "{3}" {4}', TesseractExe, imgPath, base, extra)
-    RunWait cmd, , "Hide"
+    RunWait(cmd, , "Hide")
     out := base ".txt"
     if FileExist(out)
         return FileRead(out, "UTF-8")
@@ -354,7 +354,7 @@ RunTesseractTSV(imgPath) {
     global TesseractExe
     base := A_Temp "\raid_ocr_" A_TickCount
     cmd  := Format('"{1}" "{2}" "{3}" -l eng tsv', TesseractExe, imgPath, base)
-    RunWait cmd, , "Hide"
+    RunWait(cmd, , "Hide")
     if FileExist(base ".tsv")
         return FileRead(base ".tsv", "UTF-8")
     return ""
@@ -391,7 +391,7 @@ ExtractPowersFromTSV(tsvText) {
 
 ParsePowerText(text) {
     ; "187.23K" / "188,89K" / "1.2M"
-    if RegExMatch(text, "(?i)\b(\d{1,3}(?:[.,]\d{2})?)\s*([KM])\b", &m) {
+    if RegExMatch(text, "(?i)\b(\d{1,3}(?:[.,]\d{1,2})?)\s*([KM])\b", &m) {
         num := StrReplace(m[1], ",", ".")
         n := 0
         try n := Number(num) catch n := 0
@@ -447,7 +447,7 @@ FlashOverlay() {
         ov.on := true
     }
     UpdateOverlay(GetAllPowerRects(), [])
-    SetTimer () => (DestroyOverlay(), ov.on := false), -2000
+    SetTimer(() => (DestroyOverlay(), ov.on := false), -2000)
     if wasOn
         ov.on := true
 }
@@ -525,37 +525,37 @@ UpdateOverlay(rects, values, selIdx := 0) {
 ; ---------- ABSOLUTE RECT CALIBRATION ----------
 QuickGridCalibrate() {
     global IniFile
-    MsgBox "Click TOP-LEFT of row1 Team Power.", "Quick Grid"
+    MsgBox("Click TOP-LEFT of row1 Team Power.", "Quick Grid")
     tl1 := WaitForClick()
-    MsgBox "Click BOTTOM-RIGHT of row1 Team Power.", "Quick Grid"
+    MsgBox("Click BOTTOM-RIGHT of row1 Team Power.", "Quick Grid")
     br1 := WaitForClick()
     if (br1.x <= tl1.x || br1.y <= tl1.y) {
-        MsgBox "Invalid rectangle for row 1."
+        MsgBox("Invalid rectangle for row 1.")
         return
     }
-    MsgBox "Click TOP-LEFT of row2 Team Power.", "Quick Grid"
+    MsgBox("Click TOP-LEFT of row2 Team Power.", "Quick Grid")
     tl2 := WaitForClick()
     stepY := tl2.y - tl1.y
     if (Abs(stepY) < 10) {
-        MsgBox "Vertical spacing too small."
+        MsgBox("Vertical spacing too small.")
         return
     }
     x := tl1.x, y := tl1.y, w := br1.x - tl1.x, h := br1.y - tl1.y
     Loop 4 {
         ry := y + (A_Index - 1) * stepY
-        IniWrite(x "," ry "," w "," h, IniFile, "rects", "PowerRect" A_Index)
+        IniWrite(Format("{},{},{},{}", x, ry, w, h), IniFile, "rects", "PowerRect" A_Index)
     }
     RecomputeWorkRect()
     if !ov.on {
         InitOverlay(), ov.on := true
     }
     UpdateOverlay(GetAllPowerRects(), [])
-    MsgBox "Saved 4 rectangles. stepY=" stepY, "Quick Grid"
+    MsgBox("Saved 4 rectangles. stepY=" stepY, "Quick Grid")
 }
 
 ; ---------- Manual calibration ----------
 Calibrate() {
-    MsgBox "Set: 4 Battle buttons (top→bottom), Refresh, then 4 Power rectangles."
+    MsgBox("Set: 4 Battle buttons (top→bottom), Refresh, then 4 Power rectangles.")
     Loop 4
         SavePointFromClick("BattleBtn" A_Index, "Battle Button #" A_Index)
     SavePointFromClick("RefreshBtn", "Refresh Button")
@@ -566,36 +566,36 @@ Calibrate() {
         InitOverlay(), ov.on := true
     }
     UpdateOverlay(GetAllPowerRects(), [])
-    MsgBox "Calibration complete.", "Calibrated"
-    ToolTip ""
+    MsgBox("Calibration complete.", "Calibrated")
+    ToolTip("")
 }
 
 SavePointFromClick(name, label) {
     global IniFile
-    ToolTip "Set " label ": click once", 10, 10, 3
+    ToolTip("Set " label ": click once", 10, 10, 3)
     pt := WaitForClick()
-    IniWrite(pt.x "," pt.y, IniFile, "points", name)
-    ToolTip
+    IniWrite(Format("{},{}", pt.x, pt.y), IniFile, "points", name)
+    ToolTip()
 }
 
 SaveRectFromClicks(name, label) {
     global IniFile
-    ToolTip "Set " label ": click TOP-LEFT", 10, 10, 3
+    ToolTip("Set " label ": click TOP-LEFT", 10, 10, 3)
     tl := WaitForClick()
-    ToolTip "Set " label ": click BOTTOM-RIGHT", 10, 30, 3
+    ToolTip("Set " label ": click BOTTOM-RIGHT", 10, 30, 3)
     br := WaitForClick()
     x := Min(tl.x, br.x), y := Min(tl.y, br.y)
     w := Abs(br.x - tl.x), h := Abs(br.y - tl.y)
     if (w < 5 || h < 5)
-        MsgBox "Very small rect for " label
-    IniWrite(x "," y "," w "," h, IniFile, "rects", name)
-    ToolTip
+        MsgBox("Very small rect for " label)
+    IniWrite(Format("{},{},{},{}", x, y, w, h), IniFile, "rects", name)
+    ToolTip()
 }
 
 WaitForClick() {
-    KeyWait "LButton", "D"
-    MouseGetPos &mx, &my
-    KeyWait "LButton"
+    KeyWait("LButton", "D")
+    MouseGetPos(&mx, &my)
+    KeyWait("LButton")
     return { x: mx, y: my }
 }
 
@@ -634,22 +634,22 @@ ClickBattle(row) {
     pt := GetPointFromIni("BattleBtn" row)
     if !pt
         throw Error("Missing calibration for BattleBtn" row ". Press F2/F8.")
-    Click pt.x, pt.y
-    Sleep 500
+    Click(pt.x, pt.y)
+    Sleep(500)
 }
 
 RefreshList() {
     pt := GetPointFromIni("RefreshBtn")
     if !pt
         throw Error("Missing calibration for RefreshBtn. Press F2.")
-    Click pt.x, pt.y
-    Sleep 300
+    Click(pt.x, pt.y)
+    Sleep(300)
 }
 
 WaitForBattleAndBack() {
-    Sleep 30000
-    Send "{Esc}"
-    Sleep 1500
+    Sleep(30000)
+    Send("{Esc}")
+    Sleep(1500)
 }
 
 ; ---------- PREVIEW ----------
@@ -670,14 +670,14 @@ ScanPreview() {
     out := arr.Length ? "" : "No values detected."
     Loop arr.Length
         out .= "Row " A_Index ": " arr[A_Index] "`n"
-    MsgBox out, "Scan Preview"
+    MsgBox(out, "Scan Preview")
 }
 
 ; ---------- DEBUG ----------
 DebugShowCrops() {
     shot := SaveDir "\arena_full.png"
     if !FileExist(shot) {
-        MsgBox "Take a screenshot first (F4)."
+        MsgBox("Take a screenshot first (F4).")
         return
     }
     out := ""
@@ -685,9 +685,9 @@ DebugShowCrops() {
         p := SaveDir "\debug\PowerCrop" A_Index ".png"
         out .= (FileExist(p) ? "✔ " : "✖ ") p "`n"
         if FileExist(p)
-            Run Format('explorer.exe /select,"{1}"', p)
+            Run(Format('explorer.exe /select,"{1}"', p))
     }
-    MsgBox out, "Crop Debug"
+    MsgBox(out, "Crop Debug")
 }
 
 SelfTestTesseract() {
@@ -721,6 +721,6 @@ SelfTestTesseract() {
     msg .= "TXT preview (first 200 chars):`n" preview
     MsgBox(msg, "Self-Test")
     if (hasTxt) {
-        Run Format('explorer.exe /select,"{1}"', base ".txt")
+        Run(Format('explorer.exe /select,"{1}"', base ".txt"))
     }
 }
