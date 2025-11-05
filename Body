@@ -1,0 +1,726 @@
+; File: C:\Users\disco\OneDrive\Desktop\Raid\raid_arena_bot.ahk
+#Requires AutoHotkey v2.0
+#SingleInstance Force
+#Warn
+#Include "C:\Users\disco\OneDrive\Desktop\Raid\Gdip_All.ahk"
+
+; ======== CONFIG ========
+ThresholdPower     := 300000
+TesseractExe       := "C:\Users\disco\Tools\tesseract.exe"
+SaveDir            := "C:\Users\disco\OneDrive\Desktop\Raid"
+RefreshIntervalMs  := 15 * 60 * 1000
+IniFile            := A_ScriptDir "\raid_arena_bot_regions.ini"
+; ========================
+
+global running := false
+global gdiToken := 0
+
+; Virtual desktop (fallback only)
+global vdesk := GetVirtualScreen()
+
+; Working area = tight union of the 4 power rects (+margin)
+global workRect := vdesk
+
+; Overlay (visual only)
+global ov := { on:false, gui:0, hwnd:0, hdc:0, hbm:0, obm:0, g:0, w:0, h:0 }
+
+; ======== EDIT MODE (manual box move/resize) ========
+global editMode := false
+global editRects := []     ; live working copy of rects
+global editSel := 1        ; selected rect index (1..4)
+
+; ---------- HOTKEYS ----------
+F1::ToggleRun()
+F2::Calibrate()
+F3::RefreshList()
+F4::ScanPreview()
+F5::SelfTestTesseract()
+F6::ToggleOverlay()
+F7::FlashOverlay()
+F8::QuickGridCalibrate()
+F9::StartEditMode()
+F11::DebugShowCrops()
+F12::ShowRects()
+Esc::EscHandler()           ; single Esc router
+
+; ---------- SCOPED HOTKEYS (EDIT MODE) ----------
+#HotIf editMode
+Up::NudgeSel(0, -Step())
+Down::NudgeSel(0, Step())
+Left::NudgeSel(-Step(), 0)
+Right::NudgeSel(Step(), 0)
+
++Up::NudgeSel(0, -Step(true))
++Down::NudgeSel(0, Step(true))
++Left::NudgeSel(-Step(true), 0)
++Right::NudgeSel(Step(true), 0)
+
+^Up::ResizeSel(0, -Step())
+^Down::ResizeSel(0, Step())
+^Left::ResizeSel(-Step(), 0)
+^Right::ResizeSel(Step(), 0)
+
+^+Up::ResizeSel(0, -Step(true))
+^+Down::ResizeSel(0, Step(true))
+^+Left::ResizeSel(-Step(true), 0)
+^+Right::ResizeSel(Step(true), 0)
+
+Tab::CycleSel(1)
+Backspace::CycleSel(-1)
+s::SaveEditRects(false)
+Enter::SaveEditRects(true)
+#HotIf
+
+; ---------- ESC router ----------
+EscHandler() {
+    global editMode
+    if (editMode) {
+        CancelEditRects()
+        return
+    }
+    SafeExit()
+}
+
+; ---------- EDIT MODE HELPERS ----------
+Step(big := false) => big ? 5 : 1
+
+StartEditMode() {
+    global editMode, editRects, editSel
+    r := GetAllPowerRects()
+    if (r.Length != 4) {
+        MsgBox "No rectangles found. Calibrate (F8 or F2) first."
+        return
+    }
+    editRects := []
+    for x in r
+        editRects.Push({x:x.x, y:x.y, w:x.w, h:x.h})
+    editSel := 1
+    if !ov.on {
+        InitOverlay()
+        ov.on := true
+    }
+    editMode := true
+    DrawEditOverlay()
+    ToolTip "EDIT: Arrows=Move, Ctrl+Arrows=Resize, Shift=×5, Tab/Backspace=Next/Prev, S=Save, Enter=Save&Exit, Esc=Exit", 10, 10, 2
+    SetTimer () => ToolTip(), -2500
+}
+
+DrawEditOverlay() {
+    UpdateOverlay(editRects, [], editSel)
+}
+
+NudgeSel(dx, dy) {
+    global editRects, editSel
+    r := editRects[editSel]
+    r.x += dx, r.y += dy
+    r := ConstrainRect(r)
+    editRects[editSel] := r
+    DrawEditOverlay()
+}
+
+ResizeSel(dw, dh) {
+    global editRects, editSel
+    r := editRects[editSel]
+    r.w := Max(5, r.w + dw)
+    r.h := Max(5, r.h + dh)
+    r := ConstrainRect(r)
+    editRects[editSel] := r
+    DrawEditOverlay()
+}
+
+CycleSel(delta) {
+    global editSel, editRects
+    editSel += delta
+    if (editSel < 1)
+        editSel := editRects.Length
+    if (editSel > editRects.Length)
+        editSel := 1
+    DrawEditOverlay()
+}
+
+SaveEditRects(exitAfter := true) {
+    global editRects, IniFile, editMode
+    if (editRects.Length != 4) {
+        MsgBox "Nothing to save."
+        return
+    }
+    Loop 4 {
+        r := editRects[A_Index]
+        IniWrite(r.x "," r.y "," r.w "," r.h, IniFile, "rects", "PowerRect" A_Index)
+    }
+    RecomputeWorkRect()
+    if (exitAfter) {
+        editMode := false
+        UpdateOverlay(GetAllPowerRects(), [])
+        MsgBox "Saved rectangles.", "Edit Mode"
+    } else {
+        ToolTip "Saved.", 10, 10, 2
+        SetTimer () => ToolTip(), -700
+    }
+}
+
+CancelEditRects() {
+    global editMode
+    editMode := false
+    UpdateOverlay(GetAllPowerRects(), [])
+    MsgBox "Exited edit mode.", "Edit Mode"
+}
+
+ConstrainRect(r) {
+    ; keep rect inside virtual desktop
+    global vdesk
+    if (r.x < vdesk.x) r.x := vdesk.x
+    if (r.y < vdesk.y) r.y := vdesk.y
+    if (r.x + r.w > vdesk.x + vdesk.w) r.x := (vdesk.x + vdesk.w) - r.w
+    if (r.y + r.h > vdesk.y + vdesk.h) r.y := (vdesk.y + vdesk.h) - r.h
+    return r
+}
+
+; ---------- GDI+ / VIRTUAL DESKTOP ----------
+EnsureGDI() {
+    global gdiToken
+    if (gdiToken = 0)
+        gdiToken := Gdip_Startup()
+}
+GetVirtualScreen() {
+    x := SysGet(76), y := SysGet(77), w := SysGet(78), h := SysGet(79)
+    return {x:x, y:y, w:w, h:h}
+}
+SafeExit() {
+    global running, gdiToken
+    running := false
+    DestroyOverlay()
+    if (gdiToken) {
+        Gdip_Shutdown(gdiToken)
+        gdiToken := 0
+    }
+    ExitApp
+}
+
+; ---------- WORKING RECT ----------
+RecomputeWorkRect() {
+    global workRect, vdesk
+    rects := GetAllPowerRects()
+    if (rects.Length != 4) {
+        workRect := vdesk
+        return
+    }
+    minx :=  99999, miny :=  99999, maxx := -99999, maxy := -99999
+    for r in rects {
+        if (r.x < minx) minx := r.x
+        if (r.y < miny) miny := r.y
+        if (r.x + r.w > maxx) maxx := r.x + r.w
+        if (r.y + r.h > maxy) maxy := r.y + r.h
+    }
+    ; add small margin
+    m := 20
+    workRect := { x: minx - m, y: miny - m, w: (maxx - minx) + 2*m, h: (maxy - miny) + 2*m }
+}
+
+; ---------- MAIN ----------
+ToggleRun() {
+    global running
+    running := !running
+    ToolTip running ? "RUNNING…" : "STOPPED"
+    if (running)
+        MainLoop()
+    else
+        ToolTip "STOPPED", 0, 0, 1
+}
+
+MainLoop() {
+    global running, RefreshIntervalMs, ThresholdPower, SaveDir
+    EnsureGDI()
+    if !DirExist(SaveDir "\debug")
+        DirCreate SaveDir "\debug"
+    RecomputeWorkRect()
+    lastRefresh := A_TickCount
+
+    while running {
+        shot := SaveDir "\arena_full.png"
+        pScr := CaptureWorkBitmap()
+        if !pScr {
+            ToolTip "Screen capture failed.", 10, 10, 3
+            Sleep 800
+            continue
+        }
+        Gdip_SaveBitmapToFile(pScr, shot)
+        Gdip_DisposeImage(pScr)
+
+        powers := OCRPowersFromFile(shot)
+        if (powers.Length = 0) {
+            tsv := RunTesseractTSV(shot)
+            powers := ExtractPowersFromTSV(tsv)
+        }
+
+        UpdateOverlay(GetAllPowerRects(), powers)
+
+        Loop Min(4, powers.Length) {
+            row := A_Index
+            if (powers[row] > 0 && powers[row] <= ThresholdPower) {
+                ClickBattle(row)
+                WaitForBattleAndBack()
+                if !running
+                    return
+            }
+            Sleep 300
+        }
+
+        if (A_TickCount - lastRefresh >= RefreshIntervalMs) {
+            RefreshList()
+            lastRefresh := A_TickCount
+            Sleep 1500
+        }
+        Sleep 800
+    }
+}
+
+; ---------- CAPTURE ----------
+CaptureWorkBitmap() {
+    EnsureGDI()
+    global workRect
+    return Gdip_BitmapFromScreen(workRect.x "|" workRect.y "|" workRect.w "|" workRect.h)
+}
+
+; ---------- OCR FROM FILE (normalize to workRect) ----------
+OCRPowersFromFile(imgPath) {
+    arr := []
+    rects := GetAllPowerRects()
+    if (rects.Length != 4)
+        return arr
+
+    pBmp := Gdip_CreateBitmapFromFile(imgPath)
+    if !pBmp
+        return arr
+
+    Loop 4 {
+        r := rects[A_Index]
+        val := OCRRegionValue_FromBitmap(pBmp, r, A_Index)
+        arr.Push(val)
+    }
+    Gdip_DisposeImage(pBmp)
+    return arr
+}
+
+OCRRegionValue_FromBitmap(pBmp, r, idx := 0) {
+    global workRect
+    try {
+        ; absolute -> bitmap-local
+        nx := r.x - workRect.x
+        ny := r.y - workRect.y
+        if (nx < 0 || ny < 0)
+            return 0
+
+        pCrop := Gdip_CloneBitmapArea(pBmp, nx, ny, r.w, r.h, 0x26200A) ; 32bpp ARGB
+        if !pCrop
+            return 0
+
+        ; 2x upscale
+        w2 := Max(2, r.w * 2), h2 := Max(2, r.h * 2)
+        p2 := Gdip_CreateBitmap(w2, h2)
+        g2 := Gdip_GraphicsFromImage(p2)
+        Gdip_SetInterpolationMode(g2, 7)
+        Gdip_DrawImage(g2, pCrop, 0, 0, w2, h2)
+        Gdip_DeleteGraphics(g2)
+
+        tmp := A_Temp "\raid_ocr_crop_" idx "_" A_TickCount ".png"
+        Gdip_SaveBitmapToFile(p2, tmp)
+        try FileCopy(tmp, SaveDir "\debug\PowerCrop" idx ".png", true)
+        Gdip_DisposeImage(p2)
+        Gdip_DisposeImage(pCrop)
+
+        txt := RunTesseractTXT(tmp, "--psm 7 --oem 1 -l eng -c classify_bln_numeric_mode=1 -c tessedit_char_whitelist=0123456789KkMm., ")
+        try FileDelete tmp
+        try FileAppend txt, SaveDir "\debug\PowerCrop" idx ".txt", "UTF-8"
+
+        return ParsePowerText(txt)
+    } catch {
+        return 0
+    }
+}
+
+RunTesseractTXT(imgPath, extra := "") {
+    global TesseractExe
+    base := A_Temp "\raid_ocr_txt_" A_TickCount "_" Random(1000,9999)
+    cmd  := Format('"{1}" "{2}" "{3}" {4}', TesseractExe, imgPath, base, extra)
+    RunWait cmd, , "Hide"
+    out := base ".txt"
+    if FileExist(out)
+        return FileRead(out, "UTF-8")
+    return ""
+}
+
+RunTesseractTSV(imgPath) {
+    global TesseractExe
+    base := A_Temp "\raid_ocr_" A_TickCount
+    cmd  := Format('"{1}" "{2}" "{3}" -l eng tsv', TesseractExe, imgPath, base)
+    RunWait cmd, , "Hide"
+    if FileExist(base ".tsv")
+        return FileRead(base ".tsv", "UTF-8")
+    return ""
+}
+
+ExtractPowersFromTSV(tsvText) {
+    powers := []
+    if (tsvText = "")
+        return powers
+    lines := StrSplit(tsvText, "`n")
+    tmp := []
+    for line in lines {
+        cols := StrSplit(Trim(line, "`r"), "`t")
+        if (cols.Length < 12)
+            continue
+        if (cols[1] != "4")
+            continue
+        top := 0
+        try {
+            top := Integer(cols[8])
+        } catch {
+            top := 0
+        }
+        text := cols[12]
+        val := ParsePowerText(text)
+        if (val > 0)
+            tmp.Push({power: val, top: top})
+    }
+    SortByTop(tmp)
+    for item in tmp
+        powers.Push(item.power)
+    return powers
+}
+
+ParsePowerText(text) {
+    ; "187.23K" / "188,89K" / "1.2M"
+    if RegExMatch(text, "(?i)\b(\d{1,3}(?:[.,]\d{2})?)\s*([KM])\b", &m) {
+        num := StrReplace(m[1], ",", ".")
+        n := 0
+        try n := Number(num) catch n := 0
+        suf := StrUpper(m[2])
+        return Round(n * (suf = "K" ? 1000 : 1000000))
+    }
+    ; "233,180" / "233 180" / "233180"
+    if RegExMatch(text, "(\d[\d\.,\s]{4,9})", &n2) {
+        raw := RegExReplace(n2[1], "[^\d]")
+        v := 0
+        try v := Integer(raw) catch v := 0
+        return v
+    }
+    return 0
+}
+
+SortByTop(arr) {
+    if (arr.Length < 2)
+        return
+    out := []
+    for item in arr {
+        pos := out.Length + 1
+        Loop out.Length {
+            if (item.top < out[A_Index].top) {
+                pos := A_Index
+                break
+            }
+        }
+        out.InsertAt(pos, item)
+    }
+    arr.Length := 0
+    for it in out
+        arr.Push(it)
+}
+
+; ---------- OVERLAY (visual; anchored to workRect) ----------
+ToggleOverlay() {
+    global ov
+    if ov.on {
+        DestroyOverlay()
+        return
+    }
+    InitOverlay()
+    ov.on := true
+    UpdateOverlay(GetAllPowerRects(), [])
+}
+
+FlashOverlay() {
+    global ov
+    wasOn := ov.on
+    if !ov.on {
+        InitOverlay()
+        ov.on := true
+    }
+    UpdateOverlay(GetAllPowerRects(), [])
+    SetTimer () => (DestroyOverlay(), ov.on := false), -2000
+    if wasOn
+        ov.on := true
+}
+
+InitOverlay() {
+    global ov, workRect
+    EnsureGDI()
+    ov.w := workRect.w, ov.h := workRect.h
+    ov.gui := Gui("+AlwaysOnTop -Caption +ToolWindow +E0x80020 +LastFound +OwnDialogs")
+    ov.hwnd := ov.gui.Hwnd
+    ov.gui.Show("x" workRect.x " y" workRect.y " w" ov.w " h" ov.h)
+    ov.hdc := CreateCompatibleDC()
+    ov.hbm := CreateDIBSection(ov.w, ov.h)
+    ov.obm := SelectObject(ov.hdc, ov.hbm)
+    ov.g   := Gdip_GraphicsFromHDC(ov.hdc)
+    Gdip_SetSmoothingMode(ov.g, 4)
+    Gdip_SetTextRenderingHint(ov.g, 5)
+    Gdip_GraphicsClear(ov.g, 0x00000000)
+    UpdateLayeredWindow(ov.hwnd, ov.hdc, 0, 0, ov.w, ov.h, 255)
+}
+
+DestroyOverlay() {
+    global ov
+    if !ov.gui
+        return
+    try {
+        if ov.g
+            Gdip_DeleteGraphics(ov.g)
+        if ov.obm
+            SelectObject(ov.hdc, ov.obm)
+        if ov.hbm
+            DeleteObject(ov.hbm)
+        if ov.hdc
+            DeleteDC(ov.hdc)
+        if ov.gui
+            ov.gui.Destroy()
+    }
+    ov := { on:false, gui:0, hwnd:0, hdc:0, hbm:0, obm:0, g:0, w:0, h:0 }
+}
+
+; selected index highlight supported
+UpdateOverlay(rects, values, selIdx := 0) {
+    global ov, workRect
+    if !ov.on
+        return
+    if !ov.g {
+        InitOverlay()
+        if !ov.g
+            return
+    }
+    Gdip_GraphicsClear(ov.g, 0x00000000)
+    pFill := Gdip_BrushCreateSolid(0x2200AAFF)
+    pPen  := Gdip_CreatePen(0xFF0077FF, 2)
+    pSel  := Gdip_CreatePen(0xFFFFAA00, 4)
+
+    Loop rects.Length {
+        r := rects[A_Index]
+        if !r
+            continue
+        ; absolute -> overlay-local
+        x := r.x - workRect.x
+        y := r.y - workRect.y
+        Gdip_FillRectangle(ov.g, pFill, x, y, r.w, r.h)
+        Gdip_DrawRectangle(ov.g, (A_Index = selIdx ? pSel : pPen), x, y, r.w, r.h)
+        if (A_Index <= values.Length && values[A_Index] > 0) {
+            txt  := Format("{:d}", values[A_Index])
+            opts := "x" (x + 4) " y" (y - 20) " s16 cffffffff"
+            Gdip_TextToGraphics(ov.g, txt, opts, "Segoe UI")
+        }
+    }
+    UpdateLayeredWindow(ov.hwnd, ov.hdc, 0, 0, ov.w, ov.h, 255)
+    Gdip_DeleteBrush(pFill), Gdip_DeletePen(pPen), Gdip_DeletePen(pSel)
+}
+
+; ---------- ABSOLUTE RECT CALIBRATION ----------
+QuickGridCalibrate() {
+    global IniFile
+    MsgBox "Click TOP-LEFT of row1 Team Power.", "Quick Grid"
+    tl1 := WaitForClick()
+    MsgBox "Click BOTTOM-RIGHT of row1 Team Power.", "Quick Grid"
+    br1 := WaitForClick()
+    if (br1.x <= tl1.x || br1.y <= tl1.y) {
+        MsgBox "Invalid rectangle for row 1."
+        return
+    }
+    MsgBox "Click TOP-LEFT of row2 Team Power.", "Quick Grid"
+    tl2 := WaitForClick()
+    stepY := tl2.y - tl1.y
+    if (Abs(stepY) < 10) {
+        MsgBox "Vertical spacing too small."
+        return
+    }
+    x := tl1.x, y := tl1.y, w := br1.x - tl1.x, h := br1.y - tl1.y
+    Loop 4 {
+        ry := y + (A_Index - 1) * stepY
+        IniWrite(x "," ry "," w "," h, IniFile, "rects", "PowerRect" A_Index)
+    }
+    RecomputeWorkRect()
+    if !ov.on {
+        InitOverlay(), ov.on := true
+    }
+    UpdateOverlay(GetAllPowerRects(), [])
+    MsgBox "Saved 4 rectangles. stepY=" stepY, "Quick Grid"
+}
+
+; ---------- Manual calibration ----------
+Calibrate() {
+    MsgBox "Set: 4 Battle buttons (top→bottom), Refresh, then 4 Power rectangles."
+    Loop 4
+        SavePointFromClick("BattleBtn" A_Index, "Battle Button #" A_Index)
+    SavePointFromClick("RefreshBtn", "Refresh Button")
+    Loop 4
+        SaveRectFromClicks("PowerRect" A_Index, "Power Area #" A_Index)
+    RecomputeWorkRect()
+    if !ov.on {
+        InitOverlay(), ov.on := true
+    }
+    UpdateOverlay(GetAllPowerRects(), [])
+    MsgBox "Calibration complete.", "Calibrated"
+    ToolTip ""
+}
+
+SavePointFromClick(name, label) {
+    global IniFile
+    ToolTip "Set " label ": click once", 10, 10, 3
+    pt := WaitForClick()
+    IniWrite(pt.x "," pt.y, IniFile, "points", name)
+    ToolTip
+}
+
+SaveRectFromClicks(name, label) {
+    global IniFile
+    ToolTip "Set " label ": click TOP-LEFT", 10, 10, 3
+    tl := WaitForClick()
+    ToolTip "Set " label ": click BOTTOM-RIGHT", 10, 30, 3
+    br := WaitForClick()
+    x := Min(tl.x, br.x), y := Min(tl.y, br.y)
+    w := Abs(br.x - tl.x), h := Abs(br.y - tl.y)
+    if (w < 5 || h < 5)
+        MsgBox "Very small rect for " label
+    IniWrite(x "," y "," w "," h, IniFile, "rects", name)
+    ToolTip
+}
+
+WaitForClick() {
+    KeyWait "LButton", "D"
+    MouseGetPos &mx, &my
+    KeyWait "LButton"
+    return { x: mx, y: my }
+}
+
+GetPointFromIni(name) {
+    global IniFile
+    if !FileExist(IniFile)
+        return ""
+    p := StrSplit(IniRead(IniFile, "points", name, ""), ",")
+    if (p.Length < 2)
+        return ""
+    return { x: Integer(p[1]), y: Integer(p[2]) }
+}
+
+GetRectFromIni(name) {
+    global IniFile
+    if !FileExist(IniFile)
+        return ""
+    p := StrSplit(IniRead(IniFile, "rects", name, ""), ",")
+    if (p.Length < 4)
+        return ""
+    return { x: Integer(p[1]), y: Integer(p[2]), w: Integer(p[3]), h: Integer(p[4]) }
+}
+
+GetAllPowerRects() {
+    arr := []
+    Loop 4 {
+        r := GetRectFromIni("PowerRect" A_Index)
+        if r
+            arr.Push(r)
+    }
+    return arr
+}
+
+; ---------- ACTIONS ----------
+ClickBattle(row) {
+    pt := GetPointFromIni("BattleBtn" row)
+    if !pt
+        throw Error("Missing calibration for BattleBtn" row ". Press F2/F8.")
+    Click pt.x, pt.y
+    Sleep 500
+}
+
+RefreshList() {
+    pt := GetPointFromIni("RefreshBtn")
+    if !pt
+        throw Error("Missing calibration for RefreshBtn. Press F2.")
+    Click pt.x, pt.y
+    Sleep 300
+}
+
+WaitForBattleAndBack() {
+    Sleep 30000
+    Send "{Esc}"
+    Sleep 1500
+}
+
+; ---------- PREVIEW ----------
+ScanPreview() {
+    EnsureGDI()
+    shot := SaveDir "\arena_full.png"
+    pScr := CaptureWorkBitmap()
+    if (pScr) {
+        Gdip_SaveBitmapToFile(pScr, shot)
+        Gdip_DisposeImage(pScr)
+    }
+    arr := OCRPowersFromFile(shot)
+    if (arr.Length = 0) {
+        tsv := RunTesseractTSV(shot)
+        arr := ExtractPowersFromTSV(tsv)
+    }
+    UpdateOverlay(GetAllPowerRects(), arr)
+    out := arr.Length ? "" : "No values detected."
+    Loop arr.Length
+        out .= "Row " A_Index ": " arr[A_Index] "`n"
+    MsgBox out, "Scan Preview"
+}
+
+; ---------- DEBUG ----------
+DebugShowCrops() {
+    shot := SaveDir "\arena_full.png"
+    if !FileExist(shot) {
+        MsgBox "Take a screenshot first (F4)."
+        return
+    }
+    out := ""
+    Loop 4 {
+        p := SaveDir "\debug\PowerCrop" A_Index ".png"
+        out .= (FileExist(p) ? "✔ " : "✖ ") p "`n"
+        if FileExist(p)
+            Run Format('explorer.exe /select,"{1}"', p)
+    }
+    MsgBox out, "Crop Debug"
+}
+
+SelfTestTesseract() {
+    EnsureGDI()
+    RecomputeWorkRect()
+    shot := SaveDir "\arena_full.png"
+    pScr := CaptureWorkBitmap()        ; << only the bounded area
+    if (pScr) {
+        Gdip_SaveBitmapToFile(pScr, shot)
+        Gdip_DisposeImage(pScr)
+    }
+    if !FileExist(shot) {
+        MsgBox("Could not create screenshot at: " shot, "Self-Test", 48)
+        return
+    }
+    if !FileExist(TesseractExe) {
+        MsgBox("Tesseract not found: " TesseractExe, "Self-Test", 48)
+        return
+    }
+    base := SaveDir "\tess_test_" A_TickCount
+    codeTxt := RunWait(Format('"{1}" "{2}" "{3}" --psm 6 -l eng', TesseractExe, shot, base), , "Hide")
+    hasTxt  := FileExist(base ".txt")
+    sizeTxt := hasTxt ? FileGetSize(base ".txt") : 0
+    codeTsv := RunWait(Format('"{1}" "{2}" "{3}" --psm 6 -l eng tsv', TesseractExe, shot, base), , "Hide")
+    hasTsv  := FileExist(base ".tsv")
+    sizeTsv := hasTsv ? FileGetSize(base ".tsv") : 0
+    preview := hasTxt ? SubStr(FileRead(base ".txt", "UTF-8"), 1, 200) : ""
+    msg := "Tesseract Self-Test (bounded area)`n`nImage: " shot "`n"
+    msg .= "TXT  exit=" codeTxt " file=" (hasTxt ? "yes" : "no") " size=" sizeTxt "`n"
+    msg .= "TSV  exit=" codeTsv " file=" (hasTsv ? "yes" : "no") " size=" sizeTsv "`n`n"
+    msg .= "TXT preview (first 200 chars):`n" preview
+    MsgBox(msg, "Self-Test")
+    if (hasTxt) {
+        Run Format('explorer.exe /select,"{1}"', base ".txt")
+    }
+}
